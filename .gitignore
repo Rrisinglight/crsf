@@ -1,0 +1,11 @@
+# Python virtual environment
+scrsf/
+venv/
+*.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Bridge A - Простой мост между пультом и UDP
-Подключается к пульту по UART и пересылает данные в UDP
+Bridge A - Простой мост между пультом и UDP или UART монитор
+Подключается к пульту по UART и пересылает данные в UDP,
+либо просто отображает данные с UART, если UDP не настроен.
 """
 
 import time
@@ -9,21 +10,24 @@ import threading
 import argparse
 import serial
 from udp_transport import BidirectionalUDPTransport
+from typing import Optional
 
 class SimpleBridge:
-    """Простой мост - только пересылка данных без парсинга"""
+    """Простой мост или UART монитор"""
     
     def __init__(self, uart_port: str, uart_baudrate: int,
-                 udp_local_port: int, udp_remote_host: str, udp_remote_port: int):
+                 udp_local_port: Optional[int] = None, udp_remote_host: Optional[str] = None, udp_remote_port: Optional[int] = None):
         self.uart_port = uart_port
         self.uart_baudrate = uart_baudrate
         self.uart = None
         self.is_running = False
         self.uart_thread = None
 
-        self.udp_transport = BidirectionalUDPTransport(
-            udp_local_port, udp_remote_host, udp_remote_port
-        )
+        self.udp_transport = None
+        if udp_local_port and udp_remote_host and udp_remote_port:
+            self.udp_transport = BidirectionalUDPTransport(
+                udp_local_port, udp_remote_host, udp_remote_port
+            )
         
         self.stats = {
             'uart_to_udp_packets': 0,
@@ -38,7 +42,7 @@ class SimpleBridge:
         self.stats_thread = None
         
     def start(self):
-        """Запуск простого моста"""
+        """Запуск моста/монитора"""
         print("Запуск Simple Bridge (Bridge A)...")
 
         try:
@@ -52,24 +56,29 @@ class SimpleBridge:
         self.uart_thread = threading.Thread(target=self._uart_reader_loop, daemon=True)
         self.uart_thread.start()
         
-        self.udp_transport.set_data_callback(self._on_udp_data)
-        self.udp_transport.start()
+        if self.udp_transport:
+            self.udp_transport.set_data_callback(self._on_udp_data)
+            self.udp_transport.start()
         
         self.stats_thread = threading.Thread(target=self._stats_loop, daemon=True)
         self.stats_thread.start()
         
         print("Simple Bridge запущен")
         print(f"UART: {self.uart.port} @ {self.uart.baudrate}")
-        print(f"UDP: {self.udp_transport.transport.local_port} -> {self.udp_transport.transport.remote_host}:{self.udp_transport.transport.remote_port}")
+        if self.udp_transport:
+            print(f"UDP: {self.udp_transport.transport.local_port} -> {self.udp_transport.transport.remote_host}:{self.udp_transport.transport.remote_port}")
+        else:
+            print("UDP транспорт отключен. Работа в режиме монитора UART.")
         
     def stop(self):
-        """Остановка простого моста"""
+        """Остановка моста/монитора"""
         print("Остановка Simple Bridge...")
         self.is_running = False
         if self.uart_thread:
             self.uart_thread.join()
         
-        self.udp_transport.stop()
+        if self.udp_transport:
+            self.udp_transport.stop()
 
         if self.uart and self.uart.is_open:
             self.uart.close()
@@ -108,15 +117,17 @@ class SimpleBridge:
         return False
         
     def _on_uart_data(self, data: bytes):
-        """Обработчик данных от UART - пересылаем в UDP"""
+        """Обработчик данных от UART - пересылаем в UDP или выводим на экран"""
         if len(data) > 0:
-            success = self.udp_transport.send_crsf_data(data)
-            if success:
-                self.stats['uart_to_udp_packets'] += 1
-                self.stats['uart_to_udp_bytes'] += len(data)
-                self.stats['last_uart_rx'] = time.time()
-                
+            self.stats['last_uart_rx'] = time.time()
+            self.stats['uart_to_udp_packets'] += 1
+            self.stats['uart_to_udp_bytes'] += len(data)
+            
+            if self.udp_transport:
                 print(f"UART->UDP: {len(data)} bytes: {' '.join(f'{b:02X}' for b in data[:16])}{'...' if len(data) > 16 else ''}")
+                self.udp_transport.send_crsf_data(data)
+            else:
+                print(f"UART RX: {len(data)} bytes: {' '.join(f'{b:02X}' for b in data[:16])}{'...' if len(data) > 16 else ''}")
                 
     def _on_udp_data(self, data: bytes):
         """Обработчик данных от UDP - пересылаем в UART"""
@@ -139,34 +150,44 @@ class SimpleBridge:
         """Вывод статистики"""
         uptime = time.time() - self.stats['start_time']
         uart_rx_ago = time.time() - self.stats['last_uart_rx'] if self.stats['last_uart_rx'] > 0 else uptime
-        udp_rx_ago = time.time() - self.stats['last_udp_rx'] if self.stats['last_udp_rx'] > 0 else uptime
-        
-        udp_stats = self.udp_transport.get_stats()
         
         print("\n" + "="*60)
         print("SIMPLE BRIDGE СТАТИСТИКА")
         print("="*60)
         print(f"Время работы: {uptime:.1f} сек")
-        print(f"UART -> UDP: {self.stats['uart_to_udp_packets']} пакетов, {self.stats['uart_to_udp_bytes']} байт")
-        print(f"UDP -> UART: {self.stats['udp_to_uart_packets']} пакетов, {self.stats['udp_to_uart_bytes']} байт")
-        print(f"Последний прием UART: {uart_rx_ago:.1f} сек назад")
-        print(f"Последний прием UDP: {udp_rx_ago:.1f} сек назад")
-        print(f"UDP соединение: {'активно' if udp_stats['connection_active'] else 'неактивно'}")
+        
+        if self.udp_transport:
+            udp_rx_ago = time.time() - self.stats['last_udp_rx'] if self.stats['last_udp_rx'] > 0 else uptime
+            udp_stats = self.udp_transport.get_stats()
+            print(f"UART -> UDP: {self.stats['uart_to_udp_packets']} пакетов, {self.stats['uart_to_udp_bytes']} байт")
+            print(f"UDP -> UART: {self.stats['udp_to_uart_packets']} пакетов, {self.stats['udp_to_uart_bytes']} байт")
+            print(f"Последний прием UART: {uart_rx_ago:.1f} сек назад")
+            print(f"Последний прием UDP: {udp_rx_ago:.1f} сек назад")
+            print(f"UDP соединение: {'активно' if udp_stats['connection_active'] else 'неактивно'}")
+        else:
+            print(f"UART получено: {self.stats['uart_to_udp_packets']} пакетов, {self.stats['uart_to_udp_bytes']} байт")
+            print(f"Последний прием UART: {uart_rx_ago:.1f} сек назад")
+            
         print("="*60)
 
 def main():
     """Основная функция"""
-    parser = argparse.ArgumentParser(description='CRSF Simple Bridge (Bridge A)')
+    parser = argparse.ArgumentParser(description='CRSF Simple Bridge (Bridge A) - UART-UDP мост или UART монитор.')
     
     parser.add_argument('--uart-port', default='/dev/serial0', help='UART порт (по умолчанию: /dev/serial0)')
     parser.add_argument('--uart-baudrate', type=int, default=416666, help='UART baudrate (по умолчанию: 416666)')
     
-    parser.add_argument('--udp-local-port', type=int, required=True, help='Локальный UDP порт')
-    parser.add_argument('--udp-remote-host', required=True, help='IP адрес удаленного моста')
-    parser.add_argument('--udp-remote-port', type=int, required=True, help='UDP порт удаленного моста')
+    parser.add_argument('--udp-local-port', type=int, default=None, help='Локальный UDP порт (для активации моста)')
+    parser.add_argument('--udp-remote-host', type=str, default=None, help='IP адрес удаленного моста (для активации моста)')
+    parser.add_argument('--udp-remote-port', type=int, default=None, help='UDP порт удаленного моста (для активации моста)')
     
     args = parser.parse_args()
-    
+
+    # Проверка, что если указан один UDP параметр, то указаны все
+    udp_params = [args.udp_local_port, args.udp_remote_host, args.udp_remote_port]
+    if any(udp_params) and not all(udp_params):
+        parser.error("Для работы UDP моста необходимо указать все три параметра: --udp-local-port, --udp-remote-host и --udp-remote-port.")
+
     try:
         bridge = SimpleBridge(
             uart_port=args.uart_port,
@@ -176,7 +197,10 @@ def main():
             udp_remote_port=args.udp_remote_port
         )
         with bridge:
-            print("Simple Bridge работает. Нажмите Ctrl+C для остановки.")
+            if bridge.udp_transport:
+                print("Simple Bridge работает в режиме моста. Нажмите Ctrl+C для остановки.")
+            else:
+                print("Simple Bridge работает в режиме монитора UART. Нажмите Ctrl+C для остановки.")
             while True:
                 time.sleep(1)
                 
