@@ -16,13 +16,16 @@ class SmartBridge:
     """Умный мост с парсингом CRSF протокола"""
     
     def __init__(self, uart_port: str, uart_baudrate: int, tx_en_pin: int, rx_en_pin: int,
-                 udp_local_port: int, udp_remote_host: str, udp_remote_port: int):
+                 udp_local_port: int, udp_remote_host: str, udp_remote_port: int,
+                 invert_uart: bool = False, gpio_chip: str = "gpiochip0"):
         
         self.uart = DualGPIO_UART(
             port=uart_port,
             baudrate=uart_baudrate,
             tx_en_pin=tx_en_pin,
-            rx_en_pin=rx_en_pin
+            rx_en_pin=rx_en_pin,
+            chip_name=gpio_chip,
+            invert=invert_uart
         )
         self.uart.set_data_callback(self._on_uart_data)
 
@@ -340,12 +343,15 @@ def main():
                        help='GPIO пин для включения TX (по умолчанию: 24)')
     parser.add_argument('--rx-en-pin', type=int, default=23,
                        help='GPIO пин для включения RX (по умолчанию: 23)')
+    parser.add_argument('--gpio-chip', type=str, default='gpiochip0',
+                       help='Имя GPIO чипа (по умолчанию: gpiochip0)')
+    
+    # Добавляем новый аргумент
+    parser.add_argument('--invert-uart', action='store_true', help='Инвертировать UART сигнал (программно)')
     
     # UDP параметры
-    parser.add_argument('--udp-local-port', type=int, default=5001,
-                       help='Локальный UDP порт (по умолчанию: 5001)')
-    parser.add_argument('--udp-remote-host', default='192.168.1.101',
-                       help='IP адрес удаленного моста (по умолчанию: 192.168.1.101)')
+    parser.add_argument('--udp-local-port', type=int, required=True, help='Локальный UDP порт')
+    parser.add_argument('--udp-remote-host', type=str, required=True, help='IP адрес удаленного моста')
     parser.add_argument('--udp-remote-port', type=int, default=5000,
                        help='UDP порт удаленного моста (по умолчанию: 5000)')
     
@@ -359,7 +365,9 @@ def main():
         rx_en_pin=args.rx_en_pin,
         udp_local_port=args.udp_local_port,
         udp_remote_host=args.udp_remote_host,
-        udp_remote_port=args.udp_remote_port
+        udp_remote_port=args.udp_remote_port,
+        invert_uart=args.invert_uart,
+        gpio_chip=args.gpio_chip
     )
     
     # Пример установки callback для фрейма RC каналов

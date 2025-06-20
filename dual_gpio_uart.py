@@ -7,8 +7,9 @@
 import serial
 import time
 import threading
-from typing import Optional
+from typing import Optional, Callable
 import gpiod
+import logging
 
 class DualGPIO_UART:
     """
@@ -16,12 +17,15 @@ class DualGPIO_UART:
     контролируется двумя отдельными GPIO пинами через gpiod.
     """
 
-    def __init__(self, port: str, baudrate: int, tx_en_pin: int, rx_en_pin: int, chip_name: str = "gpiochip4"):
+    DIRECTION_SWITCH_DELAY = 0.00005 # 50мкс задержка на переключение направления
+
+    def __init__(self, port: str, baudrate: int, tx_en_pin: int, rx_en_pin: int, chip_name: str = "gpiochip0", invert: bool = False):
         self.port = port
         self.baudrate = baudrate
         self.tx_en_pin = tx_en_pin
         self.rx_en_pin = rx_en_pin
-        self.chip_name = chip_name # На RPi5 обычно 'gpiochip4' для внешних пинов
+        self.chip_name = chip_name # На RPi5 обычно 'gpiochip0' (pinctrl-rp1)
+        self.invert = invert
 
         self.ser: Optional[serial.Serial] = None
         self.chip: Optional[gpiod.Chip] = None
@@ -30,8 +34,18 @@ class DualGPIO_UART:
 
         self.is_running = False
         self._reader_thread: Optional[threading.Thread] = None
-        self._data_callback = None
+        self._data_callback: Optional[Callable[[bytes], None]] = None
         self._lock = threading.Lock()
+        
+        # Настраиваем логирование
+        self.logger = logging.getLogger(self.__class__.__name__)
+        if not self.logger.handlers:
+            self.logger.setLevel(logging.INFO)
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+
 
     def _setup_gpio(self):
         """Настройка GPIO с использованием gpiod."""
@@ -41,15 +55,15 @@ class DualGPIO_UART:
             self.rx_line = self.chip.get_line(self.rx_en_pin)
             
             self.tx_line.request(consumer="uart_tx_en", type=gpiod.LINE_REQ_DIR_OUT, default_vals=[0])
-            self.rx_line.request(consumer="uart_rx_en", type=gpiod.LINE_REQ_DIR_OUT, default_vals=[0])
-            print(f"GPIO пины {self.tx_en_pin} и {self.rx_en_pin} на чипе {self.chip_name} настроены.")
+            self.rx_line.request(consumer="uart_rx_en", type=gpiod.LINE_REQ_DIR_OUT, default_vals=[1]) # RX enabled by default
+            self.logger.info(f"GPIO пины {self.tx_en_pin} и {self.rx_en_pin} на чипе {self.chip_name} настроены.")
         except Exception as e:
-            print(f"Ошибка настройки GPIO через gpiod: {e}")
-            print("Убедитесь, что вы используете правильное имя чипа (на RPi 5 это gpiochip4).")
-            print("Доступные чипы можно посмотреть командой: ls /dev/gpiochip*")
+            self.logger.error(f"Ошибка настройки GPIO через gpiod: {e}")
+            self.logger.error(f"Убедитесь, что вы используете правильное имя чипа (для вашей системы это, вероятно, '{self.chip_name}').")
+            self.logger.error("Доступные чипы можно посмотреть командой: gpiodetect")
             raise
 
-    def set_data_callback(self, callback):
+    def set_data_callback(self, callback: Callable[[bytes], None]):
         """Устанавливает функцию обратного вызова для принятых данных."""
         self._data_callback = callback
 
@@ -60,17 +74,18 @@ class DualGPIO_UART:
         
         self._setup_gpio()
         
-        print(f"Открытие UART порта {self.port} с управлением через gpiod...")
+        self.logger.info(f"Открытие UART порта {self.port} с управлением через gpiod...")
         try:
             self.ser = serial.Serial(self.port, self.baudrate, timeout=0.01)
         except serial.SerialException as e:
-            print(f"Ошибка открытия порта {self.port}: {e}")
+            self.logger.error(f"Ошибка открытия порта {self.port}: {e}")
             raise
 
         self.is_running = True
+        self._set_direction_rx() # Set to receive by default
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
-        print("UART запущен.")
+        self.logger.info("UART запущен.")
 
     def stop(self):
         """Останавливает поток чтения и закрывает порт."""
@@ -83,7 +98,7 @@ class DualGPIO_UART:
         
         if self.ser and self.ser.is_open:
             self.ser.close()
-            print("UART порт закрыт.")
+            self.logger.info("UART порт закрыт.")
 
         if self.tx_line:
             self.tx_line.release()
@@ -91,7 +106,7 @@ class DualGPIO_UART:
             self.rx_line.release()
         if self.chip:
             self.chip.close()
-        print("GPIO ресурсы освобождены.")
+        self.logger.info("GPIO ресурсы освобождены.")
 
     def __enter__(self):
         self.start()
@@ -104,13 +119,11 @@ class DualGPIO_UART:
         """Настраивает GPIO для передачи."""
         self.rx_line.set_value(0)
         self.tx_line.set_value(1)
-        time.sleep(0.001)
 
     def _set_direction_rx(self):
         """Настраивает GPIO для приема."""
         self.tx_line.set_value(0)
         self.rx_line.set_value(1)
-        time.sleep(0.001)
 
     def send(self, data: bytes) -> bool:
         """Отправляет данные в UART."""
@@ -119,46 +132,51 @@ class DualGPIO_UART:
         
         with self._lock:
             self._set_direction_tx()
+            time.sleep(self.DIRECTION_SWITCH_DELAY)
             try:
-                self.ser.write(data)
-                self.ser.flush() # Ждем завершения передачи
+                write_data = data
+                if self.invert:
+                    write_data = bytes(b ^ 0xFF for b in data)
+                self.ser.write(write_data)
+                self.ser.flush()
+                time.sleep((len(write_data) * 10.0 / self.baudrate) + self.DIRECTION_SWITCH_DELAY)
             except serial.SerialException as e:
-                print(f"Ошибка записи в UART: {e}")
+                self.logger.error(f"Ошибка записи в UART: {e}")
                 return False
             finally:
-                # После отправки всегда переключаемся обратно в режим приема
                 self._set_direction_rx()
         return True
 
     def _read_loop(self):
         """Основной цикл чтения данных из порта."""
-        # Устанавливаем начальное состояние на прием
-        self._set_direction_rx()
-
         while self.is_running:
             try:
-                # Читаем данные, если они есть
-                if self.ser and self.ser.in_waiting > 0:
+                if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
                     with self._lock:
-                        # Временно выключаем приемник, чтобы избежать эха от своих же данных
-                        # если схема это предполагает. Для большинства схем это не нужно.
-                        # Если нужно, можно добавить GPIO.output(self.rx_en_pin, GPIO.LOW)
-                        
+                        # Убедимся, что мы в режиме приема.
+                        # Это может быть избыточно, но надежно.
+                        self._set_direction_rx()
                         data = self.ser.read(self.ser.in_waiting)
-                        
-                        # Возвращаем приемник в активное состояние
-                        # GPIO.output(self.rx_en_pin, GPIO.HIGH)
+                    
+                    if data:
+                        if self.invert:
+                            data = bytes(b ^ 0xFF for b in data)
 
-                    if data and self._data_callback:
-                        try:
-                            self._data_callback(data)
-                        except Exception as e:
-                            print(f"Ошибка в callback: {e}")
+                        if self._data_callback:
+                            try:
+                                self._data_callback(data)
+                            except Exception as e:
+                                self.logger.error(f"Ошибка в callback: {e}")
             except serial.SerialException as e:
-                print(f"Критическая ошибка порта: {e}")
+                self.logger.error(f"Критическая ошибка порта: {e}")
                 self.is_running = False
                 break
             except Exception as e:
-                print(f"Неожиданная ошибка в цикле чтения: {e}")
+                self.logger.error(f"Неожиданная ошибка в цикле чтения: {e}")
 
-            time.sleep(0.005) # Небольшая пауза, чтобы не грузить процессор 
+            time.sleep(0.001)
+
+    @property
+    def is_open(self) -> bool:
+        """Проверяет, открыт ли порт."""
+        return self.ser and self.ser.is_open if self.is_running else False

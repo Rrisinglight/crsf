@@ -16,12 +16,14 @@ class SimpleBridge:
     """Простой мост или UART монитор"""
     
     def __init__(self, uart_port: str, uart_baudrate: int,
-                 udp_local_port: Optional[int] = None, udp_remote_host: Optional[str] = None, udp_remote_port: Optional[int] = None):
+                 udp_local_port: Optional[int] = None, udp_remote_host: Optional[str] = None, udp_remote_port: Optional[int] = None,
+                 invert_uart: bool = False):
         self.uart_port = uart_port
         self.uart_baudrate = uart_baudrate
         self.uart = None
         self.is_running = False
         self.uart_thread = None
+        self.invert_uart = invert_uart
 
         self.udp_transport = None
         if udp_local_port and udp_remote_host and udp_remote_port:
@@ -122,12 +124,17 @@ class SimpleBridge:
     def _on_uart_data(self, data: bytes):
         """Обработчик данных от UART - пересылаем в UDP или выводим на экран"""
         if len(data) > 0:
+            
+            if self.invert_uart:
+                data = bytes(b ^ 0xFF for b in data)
+
             self.stats['last_uart_rx'] = time.time()
             self.stats['uart_to_udp_packets'] += 1
             self.stats['uart_to_udp_bytes'] += len(data)
             
             if self.debug_uart_mode:
-                print(f"UART RX (DEBUG): {len(data)} bytes: {' '.join(f'{b:02X}' for b in data)}")
+                label = "UART RX (INVERTED)" if self.invert_uart else "UART RX"
+                print(f"{label}: {len(data)} bytes: {' '.join(f'{b:02X}' for b in data)}")
                 return
 
             if self.udp_transport:
@@ -184,7 +191,7 @@ def main():
     parser.add_argument('--uart-port', default='/dev/serial0', help='UART порт (по умолчанию: /dev/serial0)')
     parser.add_argument('--uart-baudrate', type=int, default=416666, help='UART baudrate (по умолчанию: 416666)')
     parser.add_argument('--debug-uart', action='store_true', help='Активировать режим отладки UART (только чтение и вывод)')
-    
+    parser.add_argument('--invert-uart', action='store_true', help='Инвертировать входящие UART данные (программно)')
     parser.add_argument('--udp-local-port', type=int, default=None, help='Локальный UDP порт (для активации моста)')
     parser.add_argument('--udp-remote-host', type=str, default=None, help='IP адрес удаленного моста (для активации моста)')
     parser.add_argument('--udp-remote-port', type=int, default=None, help='UDP порт удаленного моста (для активации моста)')
@@ -205,7 +212,8 @@ def main():
             uart_baudrate=args.uart_baudrate,
             udp_local_port=args.udp_local_port,
             udp_remote_host=args.udp_remote_host,
-            udp_remote_port=args.udp_remote_port
+            udp_remote_port=args.udp_remote_port,
+            invert_uart=args.invert_uart
         )
         bridge.debug_uart_mode = args.debug_uart
         with bridge:
