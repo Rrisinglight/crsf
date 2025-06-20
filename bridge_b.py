@@ -16,10 +16,8 @@ class SmartBridge:
     """Умный мост с парсингом CRSF протокола"""
     
     def __init__(self, uart_port: str, uart_baudrate: int, tx_en_pin: int, rx_en_pin: int,
-                 udp_local_port: int, udp_remote_host: str, udp_remote_port: int,
-                 debug: bool = False):
+                 udp_local_port: int, udp_remote_host: str, udp_remote_port: int):
         
-        self.debug_mode = debug
         self.uart = DualGPIO_UART(
             port=uart_port,
             baudrate=uart_baudrate,
@@ -129,10 +127,6 @@ class SmartBridge:
     def _on_udp_data(self, data: bytes):
         """Обработчик данных от UDP - парсим и пересылаем в UART"""
         if len(data) > 0:
-            if self.debug_mode:
-                hex_data = ' '.join(f'{b:02X}' for b in data)
-                print(f"[DEBUG RECV] ({len(data)} bytes): {hex_data}")
-
             self.stats['udp_bytes_rx'] += len(data)
             
             # Парсим CRSF фреймы
@@ -354,7 +348,6 @@ def main():
                        help='IP адрес удаленного моста (по умолчанию: 192.168.1.101)')
     parser.add_argument('--udp-remote-port', type=int, default=5000,
                        help='UDP порт удаленного моста (по умолчанию: 5000)')
-    parser.add_argument('--debug', action='store_true', help='Включить подробный отладочный вывод HEX-пакетов')
     
     args = parser.parse_args()
     
@@ -366,8 +359,7 @@ def main():
         rx_en_pin=args.rx_en_pin,
         udp_local_port=args.udp_local_port,
         udp_remote_host=args.udp_remote_host,
-        udp_remote_port=args.udp_remote_port,
-        debug=args.debug
+        udp_remote_port=args.udp_remote_port
     )
     
     # Пример установки callback для фрейма RC каналов

@@ -40,6 +40,7 @@ class SimpleBridge:
         }
         
         self.stats_thread = None
+        self.debug_uart_mode = False
         
     def start(self):
         """Запуск моста/монитора"""
@@ -67,6 +68,8 @@ class SimpleBridge:
         print(f"UART: {self.uart.port} @ {self.uart.baudrate}")
         if self.udp_transport:
             print(f"UDP: {self.udp_transport.transport.local_port} -> {self.udp_transport.transport.remote_host}:{self.udp_transport.transport.remote_port}")
+        elif self.debug_uart_mode:
+            print("--- РЕЖИМ ОТЛАДКИ UART АКТИВЕН ---")
         else:
             print("UDP транспорт отключен. Работа в режиме монитора UART.")
         
@@ -123,6 +126,10 @@ class SimpleBridge:
             self.stats['uart_to_udp_packets'] += 1
             self.stats['uart_to_udp_bytes'] += len(data)
             
+            if self.debug_uart_mode:
+                print(f"UART RX (DEBUG): {len(data)} bytes: {' '.join(f'{b:02X}' for b in data)}")
+                return
+
             if self.udp_transport:
                 print(f"UART->UDP: {len(data)} bytes: {' '.join(f'{b:02X}' for b in data[:16])}{'...' if len(data) > 16 else ''}")
                 self.udp_transport.send_crsf_data(data)
@@ -175,7 +182,9 @@ def main():
     parser = argparse.ArgumentParser(description='CRSF Simple Bridge (Bridge A) - UART-UDP мост или UART монитор.')
     
     parser.add_argument('--uart-port', default='/dev/serial0', help='UART порт (по умолчанию: /dev/serial0)')
-    parser.add_argument('--uart-baudrate', type=int, default=400000, help='UART baudrate (по умолчанию: 416666)')
+    parser.add_argument('--uart-baudrate', type=int, default=416666, help='UART baudrate (по умолчанию: 416666)')
+    parser.add_argument('--debug-uart', action='store_true', help='Активировать режим отладки UART (только чтение и вывод)')
+    
     parser.add_argument('--udp-local-port', type=int, default=None, help='Локальный UDP порт (для активации моста)')
     parser.add_argument('--udp-remote-host', type=str, default=None, help='IP адрес удаленного моста (для активации моста)')
     parser.add_argument('--udp-remote-port', type=int, default=None, help='UDP порт удаленного моста (для активации моста)')
@@ -187,6 +196,9 @@ def main():
     if any(udp_params) and not all(udp_params):
         parser.error("Для работы UDP моста необходимо указать все три параметра: --udp-local-port, --udp-remote-host и --udp-remote-port.")
 
+    if args.debug_uart and any(udp_params):
+        parser.error("Режим --debug-uart не может использоваться вместе с UDP параметрами.")
+
     try:
         bridge = SimpleBridge(
             uart_port=args.uart_port,
@@ -195,8 +207,11 @@ def main():
             udp_remote_host=args.udp_remote_host,
             udp_remote_port=args.udp_remote_port
         )
+        bridge.debug_uart_mode = args.debug_uart
         with bridge:
-            if bridge.udp_transport:
+            if bridge.debug_uart_mode:
+                print("Simple Bridge работает в режиме отладки UART. Нажмите Ctrl+C для остановки.")
+            elif bridge.udp_transport:
                 print("Simple Bridge работает в режиме моста. Нажмите Ctrl+C для остановки.")
             else:
                 print("Simple Bridge работает в режиме монитора UART. Нажмите Ctrl+C для остановки.")
