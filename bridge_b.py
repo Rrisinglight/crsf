@@ -8,17 +8,26 @@ import time
 import threading
 import argparse
 from typing import Dict, List, Optional
-from half_duplex_uart import UARTBridge
+from dual_gpio_uart import DualGPIO_UART
 from udp_transport import BidirectionalUDPTransport
 from crsf_protocol import CRSFParser, CRSFFrame, CRSFFrameType, create_heartbeat_frame, create_ping_frame
 
-class SmartBridge(UARTBridge):
+class SmartBridge:
     """Умный мост с парсингом CRSF протокола"""
     
-    def __init__(self, uart_port: str, uart_baudrate: int, dir_pin: int,
-                 udp_local_port: int, udp_remote_host: str, udp_remote_port: int):
-        super().__init__(uart_port, uart_baudrate, dir_pin)
+    def __init__(self, uart_port: str, uart_baudrate: int, tx_en_pin: int, rx_en_pin: int,
+                 udp_local_port: int, udp_remote_host: str, udp_remote_port: int,
+                 debug: bool = False):
         
+        self.debug_mode = debug
+        self.uart = DualGPIO_UART(
+            port=uart_port,
+            baudrate=uart_baudrate,
+            tx_en_pin=tx_en_pin,
+            rx_en_pin=rx_en_pin
+        )
+        self.uart.set_data_callback(self._on_uart_data)
+
         self.udp_transport = BidirectionalUDPTransport(
             udp_local_port, udp_remote_host, udp_remote_port
         )
@@ -66,8 +75,8 @@ class SmartBridge(UARTBridge):
         """Запуск умного моста"""
         print("Запуск Smart Bridge (Bridge B)...")
         
-        # Запуск UART моста
-        super().start()
+        # Запуск UART
+        self.uart.start()
         
         # Запуск UDP транспорта
         self.udp_transport.set_data_callback(self._on_udp_data)
@@ -81,14 +90,14 @@ class SmartBridge(UARTBridge):
         self.heartbeat_thread.start()
         
         print("Smart Bridge запущен")
-        print(f"UART: {self.uart.port} @ {self.uart.baudrate}, DIR pin: {self.uart.dir_pin}")
+        print(f"UART: {self.uart.port} @ {self.uart.baudrate}, TX_EN pin: {self.uart.tx_en_pin}, RX_EN pin: {self.uart.rx_en_pin}")
         print(f"UDP: {self.udp_transport.transport.local_port} -> {self.udp_transport.transport.remote_host}:{self.udp_transport.transport.remote_port}")
         
     def stop(self):
         """Остановка умного моста"""
         print("Остановка Smart Bridge...")
         self.udp_transport.stop()
-        super().stop()
+        self.uart.stop()
         print("Smart Bridge остановлен")
         
     def set_frame_callback(self, frame_type: CRSFFrameType, callback):
@@ -120,6 +129,10 @@ class SmartBridge(UARTBridge):
     def _on_udp_data(self, data: bytes):
         """Обработчик данных от UDP - парсим и пересылаем в UART"""
         if len(data) > 0:
+            if self.debug_mode:
+                hex_data = ' '.join(f'{b:02X}' for b in data)
+                print(f"[DEBUG RECV] ({len(data)} bytes): {hex_data}")
+
             self.stats['udp_bytes_rx'] += len(data)
             
             # Парсим CRSF фреймы
@@ -130,14 +143,14 @@ class SmartBridge(UARTBridge):
                 
                 # Пересылаем в UART
                 frame_data = frame.build()
-                success = self.send_to_uart(frame_data)
+                success = self.uart.send(frame_data)
                 if success:
                     self.stats['uart_frames_tx'] += 1
                     self.stats['uart_bytes_tx'] += len(frame_data)
                     
             if not frames and len(data) > 0:
                 # Если не удалось распарсить, пересылаем как есть
-                self.send_to_uart(data)
+                self.uart.send(data)
                 
     def _process_uart_frame(self, frame: CRSFFrame):
         """Обработка фрейма от UART (телеметрия от TX модуля)"""
@@ -259,17 +272,17 @@ class SmartBridge(UARTBridge):
         
     def _heartbeat_loop(self):
         """Цикл отправки heartbeat пакетов в TX модуль"""
-        while self.is_running:
+        while self.uart.is_running:
             # Отправляем heartbeat каждые 10 секунд
             heartbeat = create_heartbeat_frame()
             heartbeat_data = heartbeat.build()
-            self.send_to_uart(heartbeat_data)
+            self.uart.send(heartbeat_data)
             
             time.sleep(10.0)
             
     def _stats_loop(self):
         """Цикл вывода статистики"""
-        while self.is_running:
+        while self.uart.is_running:
             time.sleep(30)  # Статистика каждые 30 секунд
             self._print_stats()
             
@@ -313,6 +326,13 @@ class SmartBridge(UARTBridge):
                 
         print("="*70)
 
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+
 def main():
     """Основная функция"""
     parser = argparse.ArgumentParser(description='CRSF Smart Bridge (Bridge B)')
@@ -322,8 +342,10 @@ def main():
                        help='UART порт (по умолчанию: /dev/serial0)')
     parser.add_argument('--uart-baudrate', type=int, default=416666,
                        help='UART baudrate (по умолчанию: 416666)')
-    parser.add_argument('--dir-pin', type=int, default=18,
-                       help='GPIO пин для управления направлением (по умолчанию: 18)')
+    parser.add_argument('--tx-en-pin', type=int, default=24,
+                       help='GPIO пин для включения TX (по умолчанию: 24)')
+    parser.add_argument('--rx-en-pin', type=int, default=23,
+                       help='GPIO пин для включения RX (по умолчанию: 23)')
     
     # UDP параметры
     parser.add_argument('--udp-local-port', type=int, default=5001,
@@ -332,6 +354,7 @@ def main():
                        help='IP адрес удаленного моста (по умолчанию: 192.168.1.101)')
     parser.add_argument('--udp-remote-port', type=int, default=5000,
                        help='UDP порт удаленного моста (по умолчанию: 5000)')
+    parser.add_argument('--debug', action='store_true', help='Включить подробный отладочный вывод HEX-пакетов')
     
     args = parser.parse_args()
     
@@ -339,10 +362,12 @@ def main():
     bridge = SmartBridge(
         uart_port=args.uart_port,
         uart_baudrate=args.uart_baudrate,
-        dir_pin=args.dir_pin,
+        tx_en_pin=args.tx_en_pin,
+        rx_en_pin=args.rx_en_pin,
         udp_local_port=args.udp_local_port,
         udp_remote_host=args.udp_remote_host,
-        udp_remote_port=args.udp_remote_port
+        udp_remote_port=args.udp_remote_port,
+        debug=args.debug
     )
     
     # Пример установки callback для фрейма RC каналов

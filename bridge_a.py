@@ -175,8 +175,7 @@ def main():
     parser = argparse.ArgumentParser(description='CRSF Simple Bridge (Bridge A) - UART-UDP мост или UART монитор.')
     
     parser.add_argument('--uart-port', default='/dev/serial0', help='UART порт (по умолчанию: /dev/serial0)')
-    parser.add_argument('--uart-baudrate', type=int, default=416666, help='UART baudrate (по умолчанию: 416666)')
-    
+    parser.add_argument('--uart-baudrate', type=int, default=400000, help='UART baudrate (по умолчанию: 416666)')
     parser.add_argument('--udp-local-port', type=int, default=None, help='Локальный UDP порт (для активации моста)')
     parser.add_argument('--udp-remote-host', type=str, default=None, help='IP адрес удаленного моста (для активации моста)')
     parser.add_argument('--udp-remote-port', type=int, default=None, help='UDP порт удаленного моста (для активации моста)')
