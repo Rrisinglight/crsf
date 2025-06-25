@@ -9,3 +9,13 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd 
+
+# Temp files
+*.txt
+*.log
+*.csv
+*.json
+*.yaml
+*.yml
+*.ini
+*.cfg
