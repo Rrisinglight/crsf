@@ -7,16 +7,16 @@ BAUDRATE = 115200
 try:
     with serial.Serial(PORT, BAUDRATE, timeout=1) as ser:
         
-        data_to_send = b'echo_test'
+        byte_to_send = b'A'
         
-        ser.write(data_to_send)
+        ser.write(byte_to_send)
         
         time.sleep(0.1) 
 
         data_received = ser.read(ser.in_waiting)
 
-        print(f"Отправлено: {data_to_send}")
-        print(f"Получено:   {data_received}")
+        print(f"Отправлено: {byte_to_send.decode()}")
+        print(f"Получено:   {data_received.decode()}")
 
 except Exception as e:
     print(f"Ошибка: {e}")
