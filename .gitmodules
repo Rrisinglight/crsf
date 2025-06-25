@@ -1,0 +1,6 @@
+[submodule "docs/crsf_old_wiki"]
+	path = docs/crsf_old_wiki
+	url = https://github.com/crsf-wg/crsf.wiki.git
+[submodule "docs/crsf_spec"]
+	path = docs/crsf_spec
+	url = https://github.com/tbs-fpv/tbs-crsf-spec.git
